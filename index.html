@@ -1,0 +1,1661 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>FLL Team Status Tracker</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-app-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-auth-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-database-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-storage-compat.js"></script>
+</head>
+<body>
+    <div id="root"></div>
+
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+    <script type="text/babel">
+        const { useState, useEffect } = React;
+
+        // Firebase Configuration
+        const firebaseConfig = {
+            apiKey: "AIzaSyBhyxcRDG2L4aHnKF6p03Iox42DBw4Q504",
+            authDomain: "fll-team-tracker.firebaseapp.com",
+            databaseURL: "https://fll-team-tracker-default-rtdb.firebaseio.com",
+            projectId: "fll-team-tracker",
+            storageBucket: "fll-team-tracker.firebasestorage.app",
+            messagingSenderId: "887580518205",
+            appId: "1:887580518205:web:ccd2648b158b9440c98754"
+        };
+
+        // Initialize Firebase
+        if (!firebase.apps.length) {
+            firebase.initializeApp(firebaseConfig);
+        }
+
+        function App() {
+            const [view, setView] = useState('team');
+            const [teamNumber, setTeamNumber] = useState('');
+            const [zipcode, setZipcode] = useState('');
+            const [teamData, setTeamData] = useState(null);
+            const [isAdmin, setIsAdmin] = useState(false);
+            const [adminEmail, setAdminEmail] = useState('');
+            const [adminPassword, setAdminPassword] = useState('');
+            const [allTeams, setAllTeams] = useState([]);
+            const [editingTeam, setEditingTeam] = useState(null);
+            const [error, setError] = useState('');
+            const [success, setSuccess] = useState('');
+            const [loading, setLoading] = useState(false);
+            const [uploadingRoster, setUploadingRoster] = useState(false);
+            const [uploadProgress, setUploadProgress] = useState(0);
+            const [rosterInfo, setRosterInfo] = useState(null);
+
+            useEffect(() => {
+                if (isAdmin) {
+                    loadAllTeams();
+                }
+            }, [isAdmin]);
+
+            const loadAllTeams = async () => {
+                try {
+                    const db = firebase.database();
+                    const snapshot = await db.ref('teams').once('value');
+                    const data = snapshot.val();
+                    if (data) {
+                        const teamsArray = Object.keys(data).map(key => ({
+                            teamNumber: key,
+                            ...data[key]
+                        }));
+                        setAllTeams(teamsArray.sort((a, b) => Number(a.teamNumber) - Number(b.teamNumber)));
+                    } else {
+                        setAllTeams([]);
+                    }
+                } catch (err) {
+                    console.error('Error loading teams:', err);
+                    setError('Error loading teams data');
+                }
+            };
+
+            const handleTeamSearch = async () => {
+                if (!teamNumber.trim()) {
+                    setError('Please enter a team number');
+                    return;
+                }
+
+                if (!zipcode.trim()) {
+                    setError('Please enter your team zipcode');
+                    return;
+                }
+
+                setLoading(true);
+                setError('');
+                setTeamData(null);
+
+                try {
+                    const db = firebase.database();
+                    const snapshot = await db.ref(`teams/${teamNumber}`).once('value');
+                    const data = snapshot.val();
+                    
+                    if (data) {
+                        // Verify zipcode matches
+                        if (data.zipcode && data.zipcode !== zipcode) {
+                            setError('Team number and zipcode do not match. Please verify your information.');
+                        } else if (!data.zipcode) {
+                            setError('This team has not been set up with a zipcode yet. Please contact the administrator.');
+                        } else {
+                            setTeamData({ teamNumber, ...data });
+                            // Check if roster exists
+                            checkRosterExists(teamNumber);
+                        }
+                    } else {
+                        setError('Team number not found');
+                    }
+                } catch (err) {
+                    console.error('Error fetching team:', err);
+                    setError('Error fetching team data');
+                } finally {
+                    setLoading(false);
+                }
+            };
+
+            const checkRosterExists = async (teamNumber) => {
+                try {
+                    const storage = firebase.storage();
+                    const rosterRef = storage.ref(`rosters/${teamNumber}`);
+                    const items = await rosterRef.listAll();
+                    
+                    if (items.items.length > 0) {
+                        const file = items.items[0];
+                        const metadata = await file.getMetadata();
+                        setRosterInfo({
+                            exists: true,
+                            fileName: file.name,
+                            uploadDate: metadata.timeCreated,
+                            size: metadata.size
+                        });
+                    } else {
+                        setRosterInfo({ exists: false });
+                    }
+                } catch (err) {
+                    console.error('Error checking roster:', err);
+                    setRosterInfo({ exists: false });
+                }
+            };
+
+            const handleRosterUpload = async (event, teamNumber) => {
+                const file = event.target.files[0];
+                if (!file) return;
+
+                const allowedTypes = [
+                    'application/pdf',
+                    'application/vnd.ms-excel',
+                    'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+                    'application/msword',
+                    'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+                ];
+
+                if (!allowedTypes.includes(file.type)) {
+                    setError('Please upload a PDF, Excel, or Word document');
+                    return;
+                }
+
+                if (file.size > 10 * 1024 * 1024) {
+                    setError('File size must be less than 10MB');
+                    return;
+                }
+
+                setUploadingRoster(true);
+                setUploadProgress(0);
+                setError('');
+
+                try {
+                    const storage = firebase.storage();
+                    const rosterRef = storage.ref(`rosters/${teamNumber}`);
+                    
+                    // Delete existing files first (for replace functionality)
+                    try {
+                        const existingFiles = await rosterRef.listAll();
+                        for (const item of existingFiles.items) {
+                            await item.delete();
+                        }
+                    } catch (err) {
+                        console.log('No existing files to delete or error deleting:', err);
+                    }
+                    
+                    const fileName = `roster_${teamNumber}_${Date.now()}.${file.name.split('.').pop()}`;
+                    const storageRef = storage.ref(`rosters/${teamNumber}/${fileName}`);
+                    
+                    const uploadTask = storageRef.put(file);
+
+                    uploadTask.on('state_changed',
+                        (snapshot) => {
+                            const progress = (snapshot.bytesTransferred / snapshot.totalBytes) * 100;
+                            setUploadProgress(Math.round(progress));
+                        },
+                        (error) => {
+                            console.error('Upload error:', error);
+                            setError('Upload failed: ' + error.message);
+                            setUploadingRoster(false);
+                        },
+                        async () => {
+                            // Update database to mark roster as uploaded
+                            const db = firebase.database();
+                            await db.ref(`teams/${teamNumber}/rosterUploaded`).set('Y');
+                            
+                            setSuccess('Roster uploaded successfully!');
+                            setUploadingRoster(false);
+                            setUploadProgress(0);
+                            
+                            // Small delay to ensure database write completes
+                            await new Promise(resolve => setTimeout(resolve, 500));
+                            
+                            // Refresh roster info
+                            await checkRosterExists(teamNumber);
+                            
+                            // Refresh team data to update the status display
+                            const snapshot = await db.ref(`teams/${teamNumber}`).once('value');
+                            const data = snapshot.val();
+                            if (data) {
+                                setTeamData({ teamNumber, ...data });
+                            }
+                            
+                            setTimeout(() => setSuccess(''), 3000);
+                        }
+                    );
+                } catch (err) {
+                    console.error('Upload error:', err);
+                    setError('Upload failed: ' + err.message);
+                    setUploadingRoster(false);
+                }
+            };
+
+            const handleDownloadRoster = async (teamNumber) => {
+                try {
+                    const storage = firebase.storage();
+                    const rosterRef = storage.ref(`rosters/${teamNumber}`);
+                    const items = await rosterRef.listAll();
+                    
+                    if (items.items.length > 0) {
+                        const url = await items.items[0].getDownloadURL();
+                        window.open(url, '_blank');
+                    }
+                } catch (err) {
+                    console.error('Download error:', err);
+                    setError('Error downloading roster');
+                }
+            };
+
+            const handleDeleteRoster = async (teamNumber) => {
+                if (!window.confirm(`Delete roster for team ${teamNumber}?`)) return;
+
+                try {
+                    const storage = firebase.storage();
+                    const rosterRef = storage.ref(`rosters/${teamNumber}`);
+                    const items = await rosterRef.listAll();
+                    
+                    for (const item of items.items) {
+                        await item.delete();
+                    }
+
+                    // Update database
+                    const db = firebase.database();
+                    await db.ref(`teams/${teamNumber}/rosterUploaded`).set('');
+                    
+                    setSuccess('Roster deleted successfully');
+                    setTimeout(() => setSuccess(''), 3000);
+                    await loadAllTeams();
+                } catch (err) {
+                    console.error('Delete error:', err);
+                    setError('Error deleting roster');
+                }
+            };
+
+            const handleAdminLogin = async () => {
+                setLoading(true);
+                setError('');
+                
+                try {
+                    const auth = firebase.auth();
+                    await auth.signInWithEmailAndPassword(adminEmail, adminPassword);
+                    setIsAdmin(true);
+                    setSuccess('Successfully logged in as admin');
+                    setTimeout(() => setSuccess(''), 3000);
+                } catch (err) {
+                    console.error('Login error:', err);
+                    setError('Invalid credentials. Please check your email and password.');
+                } finally {
+                    setLoading(false);
+                }
+            };
+
+            const handleAdminLogout = async () => {
+                try {
+                    const auth = firebase.auth();
+                    await auth.signOut();
+                    setIsAdmin(false);
+                    setAllTeams([]);
+                    setEditingTeam(null);
+                } catch (err) {
+                    console.error('Logout error:', err);
+                }
+            };
+
+            const handleSaveTeam = async (teamData) => {
+                setLoading(true);
+                setError('');
+                
+                try {
+                    const db = firebase.database();
+                    await db.ref(`teams/${teamData.teamNumber}`).set({
+                        zipcode: teamData.zipcode || '',
+                        qualifierPaid: teamData.qualifierPaid || '',
+                        scrimmagePaid: teamData.scrimmagePaid || '',
+                        eventReady: teamData.eventReady || '',
+                        assignedQualifier: teamData.assignedQualifier || '',
+                        rosterUploaded: teamData.rosterUploaded || '',
+                        advancedToRegionals: teamData.advancedToRegionals || ''
+                    });
+                    
+                    setSuccess('Team data saved successfully');
+                    setTimeout(() => setSuccess(''), 3000);
+                    setEditingTeam(null);
+                    await loadAllTeams();
+                } catch (err) {
+                    console.error('Error saving team:', err);
+                    setError('Error saving team data: ' + err.message);
+                } finally {
+                    setLoading(false);
+                }
+            };
+
+            const handleDeleteTeam = async (teamNumber) => {
+                if (!window.confirm(`Are you sure you want to delete team ${teamNumber}?`)) {
+                    return;
+                }
+
+                setLoading(true);
+                setError('');
+                
+                try {
+                    const db = firebase.database();
+                    await db.ref(`teams/${teamNumber}`).remove();
+                    setSuccess('Team deleted successfully');
+                    setTimeout(() => setSuccess(''), 3000);
+                    await loadAllTeams();
+                } catch (err) {
+                    console.error('Error deleting team:', err);
+                    setError('Error deleting team');
+                } finally {
+                    setLoading(false);
+                }
+            };
+
+            return (
+                <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 py-8 px-4">
+                    <div className="max-w-6xl mx-auto">
+                        <div className="bg-white rounded-lg shadow-lg p-6 mb-6">
+                            <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
+                                <div>
+                                    <h1 className="text-3xl font-bold text-gray-800">FLL Team Status Tracker</h1>
+                                    <p className="text-gray-600 mt-1">Suncoast FLL - October 19, 2025</p>
+                                    <p className="text-sm text-gray-500">Email: SuncoastFLL@gmail.com if your status changes</p>
+                                </div>
+                                <div className="flex gap-2">
+                                    <button
+                                        onClick={() => setView('team')}
+                                        className={`px-4 py-2 rounded-lg font-medium transition-colors ${
+                                            view === 'team'
+                                                ? 'bg-indigo-600 text-white'
+                                                : 'bg-gray-200 text-gray-700 hover:bg-gray-300'
+                                        }`}
+                                    >
+                                        Team View
+                                    </button>
+                                    <button
+                                        onClick={() => setView('admin')}
+                                        className={`px-4 py-2 rounded-lg font-medium transition-colors ${
+                                            view === 'admin'
+                                                ? 'bg-indigo-600 text-white'
+                                                : 'bg-gray-200 text-gray-700 hover:bg-gray-300'
+                                        }`}
+                                    >
+                                        Admin
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+
+                        {error && (
+                            <div className="bg-red-50 border border-red-200 rounded-lg p-4 mb-6 flex items-center gap-2">
+                                <svg className="w-5 h-5 text-red-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                                </svg>
+                                <span className="text-red-800">{error}</span>
+                            </div>
+                        )}
+
+                        {success && (
+                            <div className="bg-green-50 border border-green-200 rounded-lg p-4 mb-6 flex items-center gap-2">
+                                <svg className="w-5 h-5 text-green-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+                                </svg>
+                                <span className="text-green-800">{success}</span>
+                            </div>
+                        )}
+
+                        {view === 'team' && (
+                            <div className="bg-white rounded-lg shadow-lg p-6">
+                                <h2 className="text-2xl font-bold text-gray-800 mb-4">Check Your Team Status</h2>
+                                <div className="space-y-4 mb-6">
+                                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                        <div>
+                                            <label className="block text-sm font-medium text-gray-700 mb-2">Team Number</label>
+                                            <input
+                                                type="text"
+                                                placeholder="Enter your team number"
+                                                value={teamNumber}
+                                                onChange={(e) => setTeamNumber(e.target.value)}
+                                                className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
+                                            />
+                                        </div>
+                                        <div>
+                                            <label className="block text-sm font-medium text-gray-700 mb-2">Team Zipcode</label>
+                                            <input
+                                                type="text"
+                                                placeholder="Enter your team zipcode"
+                                                value={zipcode}
+                                                onChange={(e) => setZipcode(e.target.value)}
+                                                onKeyPress={(e) => e.key === 'Enter' && handleTeamSearch()}
+                                                className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
+                                            />
+                                        </div>
+                                    </div>
+                                    <button
+                                        onClick={handleTeamSearch}
+                                        disabled={loading}
+                                        className="w-full md:w-auto px-6 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition-colors flex items-center justify-center gap-2 disabled:opacity-50"
+                                    >
+                                        <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+                                        </svg>
+                                        Search
+                                    </button>
+                                </div>
+
+                                {teamData && (
+                                    <div className="border border-gray-200 rounded-lg p-6">
+                                        <h3 className="text-xl font-bold text-gray-800 mb-4">Team {teamData.teamNumber}</h3>
+                                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
+                                            <StatusItem label="Qualifier Paid" value={teamData.qualifierPaid} />
+                                            <StatusItem label="Scrimmage Paid" value={teamData.scrimmagePaid} />
+                                            <StatusItem label="Ready to Participate" value={teamData.eventReady} />
+                                            <StatusItem label="Assigned Qualifier" value={teamData.assignedQualifier} />
+                                            <StatusItem label="Roster Uploaded" value={teamData.rosterUploaded} />
+                                            <StatusItem label="Advanced to Regionals" value={teamData.advancedToRegionals} />
+                                        </div>
+
+                                        <div className="border-t pt-6">
+                                            <h4 className="text-lg font-bold text-gray-800 mb-4">Team Roster Upload</h4>
+                                            
+                                            {rosterInfo?.exists ? (
+                                                <div className="bg-green-50 border border-green-200 rounded-lg p-4">
+                                                    <div className="flex items-center justify-between">
+                                                        <div>
+                                                            <p className="font-medium text-green-900">✓ Roster Uploaded</p>
+                                                            <p className="text-sm text-green-700 mt-1">
+                                                                File: {rosterInfo.fileName}
+                                                            </p>
+                                                            <p className="text-xs text-green-600 mt-1">
+                                                                Uploaded: {new Date(rosterInfo.uploadDate).toLocaleDateString()}
+                                                            </p>
+                                                        </div>
+                                                        <label className="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 cursor-pointer transition-colors">
+                                                            Replace Roster
+                                                            <input
+                                                                type="file"
+                                                                accept=".pdf,.xlsx,.xls,.doc,.docx"
+                                                                onChange={(e) => handleRosterUpload(e, teamData.teamNumber)}
+                                                                className="hidden"
+                                                                disabled={uploadingRoster}
+                                                            />
+                                                        </label>
+                                                    </div>
+                                                </div>
+                                            ) : (
+                                                <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
+                                                    <p className="text-blue-900 mb-4">Please upload your team roster (PDF, Excel, or Word format)</p>
+                                                    <label className="px-6 py-3 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 cursor-pointer transition-colors inline-block">
+                                                        {uploadingRoster ? 'Uploading...' : 'Upload Roster'}
+                                                        <input
+                                                            type="file"
+                                                            accept=".pdf,.xlsx,.xls,.doc,.docx"
+                                                            onChange={(e) => handleRosterUpload(e, teamData.teamNumber)}
+                                                            className="hidden"
+                                                            disabled={uploadingRoster}
+                                                        />
+                                                    </label>
+                                                </div>
+                                            )}
+
+                                            {uploadingRoster && (
+                                                <div className="mt-4">
+                                                    <div className="flex items-center justify-between mb-2">
+                                                        <span className="text-sm text-gray-600">Uploading...</span>
+                                                        <span className="text-sm font-medium text-indigo-600">{uploadProgress}%</span>
+                                                    </div>
+                                                    <div className="w-full bg-gray-200 rounded-full h-2">
+                                                        <div 
+                                                            className="bg-indigo-600 h-2 rounded-full transition-all duration-300"
+                                                            style={{ width: `${uploadProgress}%` }}
+                                                        ></div>
+                                                    </div>
+                                                </div>
+                                            )}
+
+                                            <p className="text-xs text-gray-500 mt-4">
+                                                * Accepted formats: PDF, Excel (.xlsx, .xls), Word (.doc, .docx)<br/>
+                                                * Maximum file size: 10MB
+                                            </p>
+                                        </div>
+                                    </div>
+                                )}
+                            </div>
+                        )}
+
+                        {view === 'admin' && (
+                            <div className="bg-white rounded-lg shadow-lg p-6">
+                                {!isAdmin ? (
+                                    <div className="max-w-md mx-auto">
+                                        <div className="flex items-center gap-2 mb-6">
+                                            <svg className="w-6 h-6 text-indigo-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
+                                            </svg>
+                                            <h2 className="text-2xl font-bold text-gray-800">Admin Login</h2>
+                                        </div>
+                                        <div className="space-y-4">
+                                            <input
+                                                type="email"
+                                                placeholder="Admin Email"
+                                                value={adminEmail}
+                                                onChange={(e) => setAdminEmail(e.target.value)}
+                                                className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
+                                            />
+                                            <input
+                                                type="password"
+                                                placeholder="Password"
+                                                value={adminPassword}
+                                                onChange={(e) => setAdminPassword(e.target.value)}
+                                                onKeyPress={(e) => e.key === 'Enter' && handleAdminLogin()}
+                                                className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
+                                            />
+                                            <button
+                                                onClick={handleAdminLogin}
+                                                disabled={loading}
+                                                className="w-full px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition-colors disabled:opacity-50"
+                                            >
+                                                {loading ? 'Logging in...' : 'Login'}
+                                            </button>
+                                        </div>
+                                    </div>
+                                ) : (
+                                    <div>
+                                        <div className="flex justify-between items-center mb-6">
+                                            <h2 className="text-2xl font-bold text-gray-800">Manage Teams ({allTeams.length})</h2>
+                                            <div className="flex gap-2">
+                                                <button
+                                                    onClick={() => setEditingTeam({ teamNumber: '', new: true })}
+                                                    className="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors flex items-center gap-2"
+                                                >
+                                                    <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+                                                    </svg>
+                                                    Add Team
+                                                </button>
+                                                <button
+                                                    onClick={handleAdminLogout}
+                                                    className="px-4 py-2 bg-gray-600 text-white rounded-lg hover:bg-gray-700 transition-colors flex items-center gap-2"
+                                                >
+                                                    <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" />
+                                                    </svg>
+                                                    Logout
+                                                </button>
+                                            </div>
+                                        </div>
+
+                                        {editingTeam ? (
+                                            <EditTeamForm
+                                                team={editingTeam}
+                                                onSave={handleSaveTeam}
+                                                onCancel={() => setEditingTeam(null)}
+                                                loading={loading}
+                                            />
+                                        ) : (
+                                            <div className="overflow-x-auto">
+                                                <table className="w-full text-sm">
+                                                    <thead className="bg-gray-50">
+                                                        <tr>
+                                                            <th className="px-3 py-3 text-left text-xs font-semibold text-gray-700">Team #</th>
+                                                            <th className="px-3 py-3 text-left text-xs font-semibold text-gray-700">Zipcode</th>
+                                                            <th className="px-3 py-3 text-left text-xs font-semibold text-gray-700">Qualifier Paid</th>
+                                                            <th className="px-3 py-3 text-left text-xs font-semibold text-gray-700">Scrimmage Paid</th>
+                                                            <th className="px-3 py-3 text-left text-xs font-semibold text-gray-700">Event Ready</th>
+                                                            <th className="px-3 py-3 text-left text-xs font-semibold text-gray-700">Assigned Qualifier</th>
+                                                            <th className="px-3 py-3 text-left text-xs font-semibold text-gray-700">Roster</th>
+                                                            <th className="px-3 py-3 text-left text-xs font-semibold text-gray-700">Advanced</th>
+                                                            <th className="px-3 py-3 text-left text-xs font-semibold text-gray-700">Actions</th>
+                                                        </tr>
+                                                    </thead>
+                                                    <tbody className="divide-y divide-gray-200">
+                                                        {allTeams.map((team) => (
+                                                            <tr key={team.teamNumber} className="hover:bg-gray-50">
+                                                                <td className="px-3 py-3 text-sm font-medium text-gray-900">{team.teamNumber}</td>
+                                                                <td className="px-3 py-3 text-sm text-gray-700">{team.zipcode || '-'}</td>
+                                                                <td className="px-3 py-3 text-sm text-gray-700">{team.qualifierPaid || '-'}</td>
+                                                                <td className="px-3 py-3 text-sm text-gray-700">{team.scrimmagePaid || '-'}</td>
+                                                                <td className="px-3 py-3 text-sm text-gray-700">{team.eventReady || '-'}</td>
+                                                                <td className="px-3 py-3 text-sm text-gray-700">{team.assignedQualifier || '-'}</td>
+                                                                <td className="px-3 py-3 text-xs">
+                                                                    {team.rosterUploaded === 'Y' ? (
+                                                                        <div className="flex items-center gap-2">
+                                                                            <span className="text-green-600 font-bold">✓</span>
+                                                                            <button
+                                                                                onClick={() => handleDownloadRoster(team.teamNumber)}
+                                                                                className="text-indigo-600 hover:text-indigo-800 text-xs underline"
+                                                                                title="Download"
+                                                                            >
+                                                                                Download
+                                                                            </button>
+                                                                            <button
+                                                                                onClick={() => handleDeleteRoster(team.teamNumber)}
+                                                                                className="text-red-600 hover:text-red-800 text-xs"
+                                                                                title="Delete"
+                                                                            >
+                                                                                ✗
+                                                                            </button>
+                                                                        </div>
+                                                                    ) : (
+                                                                        <span className="text-gray-400">-</span>
+                                                                    )}
+                                                                </td>
+                                                                <td className="px-3 py-3 text-sm text-gray-700">{team.advancedToRegionals || '-'}</td>
+                                                                <td className="px-3 py-3 text-sm">
+                                                                    <div className="flex gap-2">
+                                                                        <button
+                                                                            onClick={() => setEditingTeam(team)}
+                                                                            className="text-indigo-600 hover:text-indigo-800"
+                                                                            title="Edit"
+                                                                        >
+                                                                            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+                                                                            </svg>
+                                                                        </button>
+                                                                        <button
+                                                                            onClick={() => handleDeleteTeam(team.teamNumber)}
+                                                                            className="text-red-600 hover:text-red-800"
+                                                                            title="Delete"
+                                                                        >
+                                                                            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                                                                            </svg>
+                                                                        </button>
+                                                                    </div>
+                                                                </td>
+                                                            </tr>
+                                                        ))}
+                                                    </tbody>
+                                                </table>
+                                                {allTeams.length === 0 && (
+                                                    <div className="text-center py-8 text-gray-500">
+                                                        No teams found. Click "Add Team" to get started.
+                                                    </div>
+                                                )}
+                                            </div>
+                                        )}
+                                    </div>
+                                )}
+                            </div>
+                        )}
+                    </div>
+                </div>
+            );
+        }
+
+        function StatusItem({ label, value }) {
+            const isEmpty = !value || value === '';
+            return (
+                <div className="flex justify-between items-center p-3 bg-gray-50 rounded-lg">
+                    <span className="font-medium text-gray-700">{label}:</span>
+                    <span className={`font-semibold ${isEmpty ? 'text-gray-400' : 'text-gray-900'}`}>
+                        {isEmpty ? 'Not Set' : value}
+                    </span>
+                </div>
+            );
+        }
+
+        function EditTeamForm({ team, onSave, onCancel, loading }) {
+            const [formData, setFormData] = useState({
+                teamNumber: team.teamNumber || '',
+                zipcode: team.zipcode || '',
+                qualifierPaid: team.qualifierPaid || '',
+                scrimmagePaid: team.scrimmagePaid || '',
+                eventReady: team.eventReady || '',
+                assignedQualifier: team.assignedQualifier || '',
+                rosterUploaded: team.rosterUploaded || '',
+                advancedToRegionals: team.advancedToRegionals || ''
+            });
+
+            const handleSubmit = () => {
+                if (!formData.teamNumber) {
+                    alert('Team number is required');
+                    return;
+                }
+                if (!formData.zipcode) {
+                    alert('Zipcode is required for security verification');
+                    return;
+                }
+                onSave(formData);
+            };
+
+            return (
+                <div className="border border-gray-200 rounded-lg p-6 mb-6">
+                    <h3 className="text-xl font-bold text-gray-800 mb-4">
+                        {team.new ? 'Add New Team' : `Edit Team ${team.teamNumber}`}
+                    </h3>
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
+                        <div>
+                            <label className="block text-sm font-medium text-gray-700 mb-1">Team Number *</label>
+                            <input
+                                type="text"
+                                value={formData.teamNumber}
+                                onChange={(e) => setFormData({ ...formData, teamNumber: e.target.value })}
+                                disabled={!team.new}
+                                className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent disabled:bg-gray-100"
+                            />
+                        </div>
+                        <div>
+                            <label className="block text-sm font-medium text-gray-700 mb-1">Zipcode * (for verification)</label>
+                            <input
+                                type="text"
+                                value={formData.zipcode}
+                                onChange={(e) => setFormData({ ...formData, zipcode: e.target.value })}
+                                placeholder="Team's zipcode"
+                                className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
+                            />
+                        </div>
+                        <div>
+                            <label className="block text-sm font-medium text-gray-700 mb-1">Qualifier Paid</label>
+                            <input
+                                type="text"
+                                value={formData.qualifierPaid}
+                                onChange={(e) => setFormData({ ...formData, qualifierPaid: e.target.value })}
+                                placeholder="Y or leave blank"
+                                className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
+                            />
+                        </div>
+                        <div>
+                            <label className="block text-sm font-medium text-gray-700 mb-1">Scrimmage Paid</label>
+                            <input
+                                type="text"
+                                value={formData.scrimmagePaid}
+                                onChange={(e) => setFormData({ ...formData, scrimmagePaid: e.target.value })}
+                                placeholder="Y or leave blank"
+                                className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
+                            />
+                        </div>
+                        <div>
+                            <label className="block text-sm font-medium text-gray-700 mb-1">Event Ready</label>
+                            <input
+                                type="text"
+                                value={formData.eventReady}
+                                onChange={(e) => setFormData({ ...formData, eventReady: e.target.value })}
+                                placeholder="Event Ready or leave blank"
+                                className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
+                            />
+                        </div>
+                        <div>
+                            <label className="block text-sm font-medium text-gray-700 mb-1">Assigned Qualifier</label>
+                            <input
+                                type="text"
+                                value={formData.assignedQualifier}
+                                onChange={(e) => setFormData({ ...formData, assignedQualifier: e.target.value })}
+                                className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
+                            />
+                        </div>
+                        <div>
+                            <label className="block text-sm font-medium text-gray-700 mb-1">Roster Uploaded</label>
+                            <input
+                                type="text"
+                                value={formData.rosterUploaded}
+                                onChange={(e) => setFormData({ ...formData, rosterUploaded: e.target.value })}
+                                placeholder="Y or leave blank"
+                                className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
+                            />
+                        </div>
+                        <div>
+                            <label className="block text-sm font-medium text-gray-700 mb-1">Advanced to Regionals</label>
+                            <input
+                                type="text"
+                                value={formData.advancedToRegionals}
+                                onChange={(e) => setFormData({ ...formData, advancedToRegionals: e.target.value })}
+                                placeholder="Y or leave blank"
+                                className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
+                            />
+                        </div>
+                    </div>
+                    <div className="flex gap-2">
+                        <button
+                            onClick={handleSubmit}
+                            disabled={loading}
+                            className="px-6 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition-colors disabled:opacity-50"
+                        >
+                            {loading ? 'Saving...' : 'Save'}
+                        </button>
+                        <button
+                            onClick={onCancel}
+                            className="px-6 py-2 bg-gray-300 text-gray-700 rounded-lg hover:bg-gray-400 transition-colors"
+                        >
+                            Cancel
+                        </button>
+                    </div>
+                </div>
+            );
+        }
+
+        ReactDOM.render(<App />, document.getElementById('root'));
+    </script>
+</body>
+</html><!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>FLL Team Status Tracker</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-app-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-auth-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-database-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-storage-compat.js"></script>
+</head>
+<body>
+    <div id="root"></div>
+
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+    <script type="text/babel">
+        const { useState, useEffect } = React;
+
+        // Firebase Configuration
+        const firebaseConfig = {
+            apiKey: "AIzaSyBhyxcRDG2L4aHnKF6p03Iox42DBw4Q504",
+            authDomain: "fll-team-tracker.firebaseapp.com",
+            databaseURL: "https://fll-team-tracker-default-rtdb.firebaseio.com",
+            projectId: "fll-team-tracker",
+            storageBucket: "fll-team-tracker.firebasestorage.app",
+            messagingSenderId: "887580518205",
+            appId: "1:887580518205:web:ccd2648b158b9440c98754"
+        };
+
+        // Initialize Firebase
+        if (!firebase.apps.length) {
+            firebase.initializeApp(firebaseConfig);
+        }
+
+        function App() {
+            const [view, setView] = useState('team');
+            const [teamNumber, setTeamNumber] = useState('');
+            const [zipcode, setZipcode] = useState('');
+            const [teamData, setTeamData] = useState(null);
+            const [isAdmin, setIsAdmin] = useState(false);
+            const [adminEmail, setAdminEmail] = useState('');
+            const [adminPassword, setAdminPassword] = useState('');
+            const [allTeams, setAllTeams] = useState([]);
+            const [editingTeam, setEditingTeam] = useState(null);
+            const [error, setError] = useState('');
+            const [success, setSuccess] = useState('');
+            const [loading, setLoading] = useState(false);
+            const [uploadingRoster, setUploadingRoster] = useState(false);
+            const [uploadProgress, setUploadProgress] = useState(0);
+            const [rosterInfo, setRosterInfo] = useState(null);
+
+            useEffect(() => {
+                if (isAdmin) {
+                    loadAllTeams();
+                }
+            }, [isAdmin]);
+
+            const loadAllTeams = async () => {
+                try {
+                    const db = firebase.database();
+                    const snapshot = await db.ref('teams').once('value');
+                    const data = snapshot.val();
+                    if (data) {
+                        const teamsArray = Object.keys(data).map(key => ({
+                            teamNumber: key,
+                            ...data[key]
+                        }));
+                        setAllTeams(teamsArray.sort((a, b) => Number(a.teamNumber) - Number(b.teamNumber)));
+                    } else {
+                        setAllTeams([]);
+                    }
+                } catch (err) {
+                    console.error('Error loading teams:', err);
+                    setError('Error loading teams data');
+                }
+            };
+
+            const handleTeamSearch = async () => {
+                if (!teamNumber.trim()) {
+                    setError('Please enter a team number');
+                    return;
+                }
+
+                if (!zipcode.trim()) {
+                    setError('Please enter your team zipcode');
+                    return;
+                }
+
+                setLoading(true);
+                setError('');
+                setTeamData(null);
+
+                try {
+                    const db = firebase.database();
+                    const snapshot = await db.ref(`teams/${teamNumber}`).once('value');
+                    const data = snapshot.val();
+                    
+                    if (data) {
+                        // Verify zipcode matches
+                        if (data.zipcode && data.zipcode !== zipcode) {
+                            setError('Team number and zipcode do not match. Please verify your information.');
+                        } else if (!data.zipcode) {
+                            setError('This team has not been set up with a zipcode yet. Please contact the administrator.');
+                        } else {
+                            setTeamData({ teamNumber, ...data });
+                            // Check if roster exists
+                            checkRosterExists(teamNumber);
+                        }
+                    } else {
+                        setError('Team number not found');
+                    }
+                } catch (err) {
+                    console.error('Error fetching team:', err);
+                    setError('Error fetching team data');
+                } finally {
+                    setLoading(false);
+                }
+            };
+
+            const checkRosterExists = async (teamNumber) => {
+                try {
+                    const storage = firebase.storage();
+                    const rosterRef = storage.ref(`rosters/${teamNumber}`);
+                    const items = await rosterRef.listAll();
+                    
+                    if (items.items.length > 0) {
+                        const file = items.items[0];
+                        const metadata = await file.getMetadata();
+                        setRosterInfo({
+                            exists: true,
+                            fileName: file.name,
+                            uploadDate: metadata.timeCreated,
+                            size: metadata.size
+                        });
+                    } else {
+                        setRosterInfo({ exists: false });
+                    }
+                } catch (err) {
+                    console.error('Error checking roster:', err);
+                    setRosterInfo({ exists: false });
+                }
+            };
+
+            const handleRosterUpload = async (event, teamNumber) => {
+                const file = event.target.files[0];
+                if (!file) return;
+
+                const allowedTypes = [
+                    'application/pdf',
+                    'application/vnd.ms-excel',
+                    'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+                    'application/msword',
+                    'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+                ];
+
+                if (!allowedTypes.includes(file.type)) {
+                    setError('Please upload a PDF, Excel, or Word document');
+                    return;
+                }
+
+                if (file.size > 10 * 1024 * 1024) {
+                    setError('File size must be less than 10MB');
+                    return;
+                }
+
+                setUploadingRoster(true);
+                setUploadProgress(0);
+                setError('');
+
+                try {
+                    const storage = firebase.storage();
+                    const rosterRef = storage.ref(`rosters/${teamNumber}`);
+                    
+                    // Delete existing files first (for replace functionality)
+                    try {
+                        const existingFiles = await rosterRef.listAll();
+                        for (const item of existingFiles.items) {
+                            await item.delete();
+                        }
+                    } catch (err) {
+                        console.log('No existing files to delete or error deleting:', err);
+                    }
+                    
+                    const fileName = `roster_${teamNumber}_${Date.now()}.${file.name.split('.').pop()}`;
+                    const storageRef = storage.ref(`rosters/${teamNumber}/${fileName}`);
+                    
+                    const uploadTask = storageRef.put(file);
+
+                    uploadTask.on('state_changed',
+                        (snapshot) => {
+                            const progress = (snapshot.bytesTransferred / snapshot.totalBytes) * 100;
+                            setUploadProgress(Math.round(progress));
+                        },
+                        (error) => {
+                            console.error('Upload error:', error);
+                            setError('Upload failed: ' + error.message);
+                            setUploadingRoster(false);
+                        },
+                        async () => {
+                            // Update database to mark roster as uploaded
+                            const db = firebase.database();
+                            await db.ref(`teams/${teamNumber}/rosterUploaded`).set('Y');
+                            
+                            setSuccess('Roster uploaded successfully!');
+                            setUploadingRoster(false);
+                            setUploadProgress(0);
+                            
+                            // Small delay to ensure database write completes
+                            await new Promise(resolve => setTimeout(resolve, 500));
+                            
+                            // Refresh roster info
+                            await checkRosterExists(teamNumber);
+                            
+                            // Refresh team data to update the status display
+                            const snapshot = await db.ref(`teams/${teamNumber}`).once('value');
+                            const data = snapshot.val();
+                            if (data) {
+                                setTeamData({ teamNumber, ...data });
+                            }
+                            
+                            setTimeout(() => setSuccess(''), 3000);
+                        }
+                    );
+                } catch (err) {
+                    console.error('Upload error:', err);
+                    setError('Upload failed: ' + err.message);
+                    setUploadingRoster(false);
+                }
+            };
+
+            const handleDownloadRoster = async (teamNumber) => {
+                try {
+                    const storage = firebase.storage();
+                    const rosterRef = storage.ref(`rosters/${teamNumber}`);
+                    const items = await rosterRef.listAll();
+                    
+                    if (items.items.length > 0) {
+                        const url = await items.items[0].getDownloadURL();
+                        window.open(url, '_blank');
+                    }
+                } catch (err) {
+                    console.error('Download error:', err);
+                    setError('Error downloading roster');
+                }
+            };
+
+            const handleDeleteRoster = async (teamNumber) => {
+                if (!window.confirm(`Delete roster for team ${teamNumber}?`)) return;
+
+                try {
+                    const storage = firebase.storage();
+                    const rosterRef = storage.ref(`rosters/${teamNumber}`);
+                    const items = await rosterRef.listAll();
+                    
+                    for (const item of items.items) {
+                        await item.delete();
+                    }
+
+                    // Update database
+                    const db = firebase.database();
+                    await db.ref(`teams/${teamNumber}/rosterUploaded`).set('');
+                    
+                    setSuccess('Roster deleted successfully');
+                    setTimeout(() => setSuccess(''), 3000);
+                    await loadAllTeams();
+                } catch (err) {
+                    console.error('Delete error:', err);
+                    setError('Error deleting roster');
+                }
+            };
+
+            const handleAdminLogin = async () => {
+                setLoading(true);
+                setError('');
+                
+                try {
+                    const auth = firebase.auth();
+                    await auth.signInWithEmailAndPassword(adminEmail, adminPassword);
+                    setIsAdmin(true);
+                    setSuccess('Successfully logged in as admin');
+                    setTimeout(() => setSuccess(''), 3000);
+                } catch (err) {
+                    console.error('Login error:', err);
+                    setError('Invalid credentials. Please check your email and password.');
+                } finally {
+                    setLoading(false);
+                }
+            };
+
+            const handleAdminLogout = async () => {
+                try {
+                    const auth = firebase.auth();
+                    await auth.signOut();
+                    setIsAdmin(false);
+                    setAllTeams([]);
+                    setEditingTeam(null);
+                } catch (err) {
+                    console.error('Logout error:', err);
+                }
+            };
+
+            const handleSaveTeam = async (teamData) => {
+                setLoading(true);
+                setError('');
+                
+                try {
+                    const db = firebase.database();
+                    await db.ref(`teams/${teamData.teamNumber}`).set({
+                        zipcode: teamData.zipcode || '',
+                        qualifierPaid: teamData.qualifierPaid || '',
+                        scrimmagePaid: teamData.scrimmagePaid || '',
+                        eventReady: teamData.eventReady || '',
+                        assignedQualifier: teamData.assignedQualifier || '',
+                        rosterUploaded: teamData.rosterUploaded || '',
+                        advancedToRegionals: teamData.advancedToRegionals || ''
+                    });
+                    
+                    setSuccess('Team data saved successfully');
+                    setTimeout(() => setSuccess(''), 3000);
+                    setEditingTeam(null);
+                    await loadAllTeams();
+                } catch (err) {
+                    console.error('Error saving team:', err);
+                    setError('Error saving team data: ' + err.message);
+                } finally {
+                    setLoading(false);
+                }
+            };
+
+            const handleDeleteTeam = async (teamNumber) => {
+                if (!window.confirm(`Are you sure you want to delete team ${teamNumber}?`)) {
+                    return;
+                }
+
+                setLoading(true);
+                setError('');
+                
+                try {
+                    const db = firebase.database();
+                    await db.ref(`teams/${teamNumber}`).remove();
+                    setSuccess('Team deleted successfully');
+                    setTimeout(() => setSuccess(''), 3000);
+                    await loadAllTeams();
+                } catch (err) {
+                    console.error('Error deleting team:', err);
+                    setError('Error deleting team');
+                } finally {
+                    setLoading(false);
+                }
+            };
+
+            return (
+                <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 py-8 px-4">
+                    <div className="max-w-6xl mx-auto">
+                        <div className="bg-white rounded-lg shadow-lg p-6 mb-6">
+                            <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
+                                <div>
+                                    <h1 className="text-3xl font-bold text-gray-800">FLL Team Status Tracker</h1>
+                                    <p className="text-gray-600 mt-1">Suncoast FLL - October 19, 2025</p>
+                                    <p className="text-sm text-gray-500">Email: SuncoastFLL@gmail.com if your status changes</p>
+                                </div>
+                                <div className="flex gap-2">
+                                    <button
+                                        onClick={() => setView('team')}
+                                        className={`px-4 py-2 rounded-lg font-medium transition-colors ${
+                                            view === 'team'
+                                                ? 'bg-indigo-600 text-white'
+                                                : 'bg-gray-200 text-gray-700 hover:bg-gray-300'
+                                        }`}
+                                    >
+                                        Team View
+                                    </button>
+                                    <button
+                                        onClick={() => setView('admin')}
+                                        className={`px-4 py-2 rounded-lg font-medium transition-colors ${
+                                            view === 'admin'
+                                                ? 'bg-indigo-600 text-white'
+                                                : 'bg-gray-200 text-gray-700 hover:bg-gray-300'
+                                        }`}
+                                    >
+                                        Admin
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+
+                        {error && (
+                            <div className="bg-red-50 border border-red-200 rounded-lg p-4 mb-6 flex items-center gap-2">
+                                <svg className="w-5 h-5 text-red-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                                </svg>
+                                <span className="text-red-800">{error}</span>
+                            </div>
+                        )}
+
+                        {success && (
+                            <div className="bg-green-50 border border-green-200 rounded-lg p-4 mb-6 flex items-center gap-2">
+                                <svg className="w-5 h-5 text-green-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+                                </svg>
+                                <span className="text-green-800">{success}</span>
+                            </div>
+                        )}
+
+                        {view === 'team' && (
+                            <div className="bg-white rounded-lg shadow-lg p-6">
+                                <h2 className="text-2xl font-bold text-gray-800 mb-4">Check Your Team Status</h2>
+                                <div className="space-y-4 mb-6">
+                                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                        <div>
+                                            <label className="block text-sm font-medium text-gray-700 mb-2">Team Number</label>
+                                            <input
+                                                type="text"
+                                                placeholder="Enter your team number"
+                                                value={teamNumber}
+                                                onChange={(e) => setTeamNumber(e.target.value)}
+                                                className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
+                                            />
+                                        </div>
+                                        <div>
+                                            <label className="block text-sm font-medium text-gray-700 mb-2">Team Zipcode</label>
+                                            <input
+                                                type="text"
+                                                placeholder="Enter your team zipcode"
+                                                value={zipcode}
+                                                onChange={(e) => setZipcode(e.target.value)}
+                                                onKeyPress={(e) => e.key === 'Enter' && handleTeamSearch()}
+                                                className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
+                                            />
+                                        </div>
+                                    </div>
+                                    <button
+                                        onClick={handleTeamSearch}
+                                        disabled={loading}
+                                        className="w-full md:w-auto px-6 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition-colors flex items-center justify-center gap-2 disabled:opacity-50"
+                                    >
+                                        <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+                                        </svg>
+                                        Search
+                                    </button>
+                                </div>
+
+                                {teamData && (
+                                    <div className="border border-gray-200 rounded-lg p-6">
+                                        <h3 className="text-xl font-bold text-gray-800 mb-4">Team {teamData.teamNumber}</h3>
+                                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
+                                            <StatusItem label="Qualifier Paid" value={teamData.qualifierPaid} />
+                                            <StatusItem label="Scrimmage Paid" value={teamData.scrimmagePaid} />
+                                            <StatusItem label="Ready to Participate" value={teamData.eventReady} />
+                                            <StatusItem label="Assigned Qualifier" value={teamData.assignedQualifier} />
+                                            <StatusItem label="Roster Uploaded" value={teamData.rosterUploaded} />
+                                            <StatusItem label="Advanced to Regionals" value={teamData.advancedToRegionals} />
+                                        </div>
+
+                                        <div className="border-t pt-6">
+                                            <h4 className="text-lg font-bold text-gray-800 mb-4">Team Roster Upload</h4>
+                                            
+                                            {rosterInfo?.exists ? (
+                                                <div className="bg-green-50 border border-green-200 rounded-lg p-4">
+                                                    <div className="flex items-center justify-between">
+                                                        <div>
+                                                            <p className="font-medium text-green-900">✓ Roster Uploaded</p>
+                                                            <p className="text-sm text-green-700 mt-1">
+                                                                File: {rosterInfo.fileName}
+                                                            </p>
+                                                            <p className="text-xs text-green-600 mt-1">
+                                                                Uploaded: {new Date(rosterInfo.uploadDate).toLocaleDateString()}
+                                                            </p>
+                                                        </div>
+                                                        <label className="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 cursor-pointer transition-colors">
+                                                            Replace Roster
+                                                            <input
+                                                                type="file"
+                                                                accept=".pdf,.xlsx,.xls,.doc,.docx"
+                                                                onChange={(e) => handleRosterUpload(e, teamData.teamNumber)}
+                                                                className="hidden"
+                                                                disabled={uploadingRoster}
+                                                            />
+                                                        </label>
+                                                    </div>
+                                                </div>
+                                            ) : (
+                                                <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
+                                                    <p className="text-blue-900 mb-4">Please upload your team roster (PDF, Excel, or Word format)</p>
+                                                    <label className="px-6 py-3 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 cursor-pointer transition-colors inline-block">
+                                                        {uploadingRoster ? 'Uploading...' : 'Upload Roster'}
+                                                        <input
+                                                            type="file"
+                                                            accept=".pdf,.xlsx,.xls,.doc,.docx"
+                                                            onChange={(e) => handleRosterUpload(e, teamData.teamNumber)}
+                                                            className="hidden"
+                                                            disabled={uploadingRoster}
+                                                        />
+                                                    </label>
+                                                </div>
+                                            )}
+
+                                            {uploadingRoster && (
+                                                <div className="mt-4">
+                                                    <div className="flex items-center justify-between mb-2">
+                                                        <span className="text-sm text-gray-600">Uploading...</span>
+                                                        <span className="text-sm font-medium text-indigo-600">{uploadProgress}%</span>
+                                                    </div>
+                                                    <div className="w-full bg-gray-200 rounded-full h-2">
+                                                        <div 
+                                                            className="bg-indigo-600 h-2 rounded-full transition-all duration-300"
+                                                            style={{ width: `${uploadProgress}%` }}
+                                                        ></div>
+                                                    </div>
+                                                </div>
+                                            )}
+
+                                            <p className="text-xs text-gray-500 mt-4">
+                                                * Accepted formats: PDF, Excel (.xlsx, .xls), Word (.doc, .docx)<br/>
+                                                * Maximum file size: 10MB
+                                            </p>
+                                        </div>
+                                    </div>
+                                )}
+                            </div>
+                        )}
+
+                        {view === 'admin' && (
+                            <div className="bg-white rounded-lg shadow-lg p-6">
+                                {!isAdmin ? (
+                                    <div className="max-w-md mx-auto">
+                                        <div className="flex items-center gap-2 mb-6">
+                                            <svg className="w-6 h-6 text-indigo-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
+                                            </svg>
+                                            <h2 className="text-2xl font-bold text-gray-800">Admin Login</h2>
+                                        </div>
+                                        <div className="space-y-4">
+                                            <input
+                                                type="email"
+                                                placeholder="Admin Email"
+                                                value={adminEmail}
+                                                onChange={(e) => setAdminEmail(e.target.value)}
+                                                className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
+                                            />
+                                            <input
+                                                type="password"
+                                                placeholder="Password"
+                                                value={adminPassword}
+                                                onChange={(e) => setAdminPassword(e.target.value)}
+                                                onKeyPress={(e) => e.key === 'Enter' && handleAdminLogin()}
+                                                className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
+                                            />
+                                            <button
+                                                onClick={handleAdminLogin}
+                                                disabled={loading}
+                                                className="w-full px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition-colors disabled:opacity-50"
+                                            >
+                                                {loading ? 'Logging in...' : 'Login'}
+                                            </button>
+                                        </div>
+                                    </div>
+                                ) : (
+                                    <div>
+                                        <div className="flex justify-between items-center mb-6">
+                                            <h2 className="text-2xl font-bold text-gray-800">Manage Teams ({allTeams.length})</h2>
+                                            <div className="flex gap-2">
+                                                <button
+                                                    onClick={() => setEditingTeam({ teamNumber: '', new: true })}
+                                                    className="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors flex items-center gap-2"
+                                                >
+                                                    <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+                                                    </svg>
+                                                    Add Team
+                                                </button>
+                                                <button
+                                                    onClick={handleAdminLogout}
+                                                    className="px-4 py-2 bg-gray-600 text-white rounded-lg hover:bg-gray-700 transition-colors flex items-center gap-2"
+                                                >
+                                                    <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" />
+                                                    </svg>
+                                                    Logout
+                                                </button>
+                                            </div>
+                                        </div>
+
+                                        {editingTeam ? (
+                                            <EditTeamForm
+                                                team={editingTeam}
+                                                onSave={handleSaveTeam}
+                                                onCancel={() => setEditingTeam(null)}
+                                                loading={loading}
+                                            />
+                                        ) : (
+                                            <div className="overflow-x-auto">
+                                                <table className="w-full text-sm">
+                                                    <thead className="bg-gray-50">
+                                                        <tr>
+                                                            <th className="px-3 py-3 text-left text-xs font-semibold text-gray-700">Team #</th>
+                                                            <th className="px-3 py-3 text-left text-xs font-semibold text-gray-700">Zipcode</th>
+                                                            <th className="px-3 py-3 text-left text-xs font-semibold text-gray-700">Qualifier Paid</th>
+                                                            <th className="px-3 py-3 text-left text-xs font-semibold text-gray-700">Scrimmage Paid</th>
+                                                            <th className="px-3 py-3 text-left text-xs font-semibold text-gray-700">Event Ready</th>
+                                                            <th className="px-3 py-3 text-left text-xs font-semibold text-gray-700">Assigned Qualifier</th>
+                                                            <th className="px-3 py-3 text-left text-xs font-semibold text-gray-700">Roster</th>
+                                                            <th className="px-3 py-3 text-left text-xs font-semibold text-gray-700">Advanced</th>
+                                                            <th className="px-3 py-3 text-left text-xs font-semibold text-gray-700">Actions</th>
+                                                        </tr>
+                                                    </thead>
+                                                    <tbody className="divide-y divide-gray-200">
+                                                        {allTeams.map((team) => (
+                                                            <tr key={team.teamNumber} className="hover:bg-gray-50">
+                                                                <td className="px-3 py-3 text-sm font-medium text-gray-900">{team.teamNumber}</td>
+                                                                <td className="px-3 py-3 text-sm text-gray-700">{team.zipcode || '-'}</td>
+                                                                <td className="px-3 py-3 text-sm text-gray-700">{team.qualifierPaid || '-'}</td>
+                                                                <td className="px-3 py-3 text-sm text-gray-700">{team.scrimmagePaid || '-'}</td>
+                                                                <td className="px-3 py-3 text-sm text-gray-700">{team.eventReady || '-'}</td>
+                                                                <td className="px-3 py-3 text-sm text-gray-700">{team.assignedQualifier || '-'}</td>
+                                                                <td className="px-3 py-3 text-xs">
+                                                                    {team.rosterUploaded === 'Y' ? (
+                                                                        <div className="flex items-center gap-2">
+                                                                            <span className="text-green-600 font-bold">✓</span>
+                                                                            <button
+                                                                                onClick={() => handleDownloadRoster(team.teamNumber)}
+                                                                                className="text-indigo-600 hover:text-indigo-800 text-xs underline"
+                                                                                title="Download"
+                                                                            >
+                                                                                Download
+                                                                            </button>
+                                                                            <button
+                                                                                onClick={() => handleDeleteRoster(team.teamNumber)}
+                                                                                className="text-red-600 hover:text-red-800 text-xs"
+                                                                                title="Delete"
+                                                                            >
+                                                                                ✗
+                                                                            </button>
+                                                                        </div>
+                                                                    ) : (
+                                                                        <span className="text-gray-400">-</span>
+                                                                    )}
+                                                                </td>
+                                                                <td className="px-3 py-3 text-sm text-gray-700">{team.advancedToRegionals || '-'}</td>
+                                                                <td className="px-3 py-3 text-sm">
+                                                                    <div className="flex gap-2">
+                                                                        <button
+                                                                            onClick={() => setEditingTeam(team)}
+                                                                            className="text-indigo-600 hover:text-indigo-800"
+                                                                            title="Edit"
+                                                                        >
+                                                                            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+                                                                            </svg>
+                                                                        </button>
+                                                                        <button
+                                                                            onClick={() => handleDeleteTeam(team.teamNumber)}
+                                                                            className="text-red-600 hover:text-red-800"
+                                                                            title="Delete"
+                                                                        >
+                                                                            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                                                                            </svg>
+                                                                        </button>
+                                                                    </div>
+                                                                </td>
+                                                            </tr>
+                                                        ))}
+                                                    </tbody>
+                                                </table>
+                                                {allTeams.length === 0 && (
+                                                    <div className="text-center py-8 text-gray-500">
+                                                        No teams found. Click "Add Team" to get started.
+                                                    </div>
+                                                )}
+                                            </div>
+                                        )}
+                                    </div>
+                                )}
+                            </div>
+                        )}
+                    </div>
+                </div>
+            );
+        }
+
+        function StatusItem({ label, value }) {
+            const isEmpty = !value || value === '';
+            return (
+                <div className="flex justify-between items-center p-3 bg-gray-50 rounded-lg">
+                    <span className="font-medium text-gray-700">{label}:</span>
+                    <span className={`font-semibold ${isEmpty ? 'text-gray-400' : 'text-gray-900'}`}>
+                        {isEmpty ? 'Not Set' : value}
+                    </span>
+                </div>
+            );
+        }
+
+        function EditTeamForm({ team, onSave, onCancel, loading }) {
+            const [formData, setFormData] = useState({
+                teamNumber: team.teamNumber || '',
+                zipcode: team.zipcode || '',
+                qualifierPaid: team.qualifierPaid || '',
+                scrimmagePaid: team.scrimmagePaid || '',
+                eventReady: team.eventReady || '',
+                assignedQualifier: team.assignedQualifier || '',
+                rosterUploaded: team.rosterUploaded || '',
+                advancedToRegionals: team.advancedToRegionals || ''
+            });
+
+            const handleSubmit = () => {
+                if (!formData.teamNumber) {
+                    alert('Team number is required');
+                    return;
+                }
+                if (!formData.zipcode) {
+                    alert('Zipcode is required for security verification');
+                    return;
+                }
+                onSave(formData);
+            };
+
+            return (
+                <div className="border border-gray-200 rounded-lg p-6 mb-6">
+                    <h3 className="text-xl font-bold text-gray-800 mb-4">
+                        {team.new ? 'Add New Team' : `Edit Team ${team.teamNumber}`}
+                    </h3>
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
+                        <div>
+                            <label className="block text-sm font-medium text-gray-700 mb-1">Team Number *</label>
+                            <input
+                                type="text"
+                                value={formData.teamNumber}
+                                onChange={(e) => setFormData({ ...formData, teamNumber: e.target.value })}
+                                disabled={!team.new}
+                                className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent disabled:bg-gray-100"
+                            />
+                        </div>
+                        <div>
+                            <label className="block text-sm font-medium text-gray-700 mb-1">Zipcode * (for verification)</label>
+                            <input
+                                type="text"
+                                value={formData.zipcode}
+                                onChange={(e) => setFormData({ ...formData, zipcode: e.target.value })}
+                                placeholder="Team's zipcode"
+                                className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
+                            />
+                        </div>
+                        <div>
+                            <label className="block text-sm font-medium text-gray-700 mb-1">Qualifier Paid</label>
+                            <input
+                                type="text"
+                                value={formData.qualifierPaid}
+                                onChange={(e) => setFormData({ ...formData, qualifierPaid: e.target.value })}
+                                placeholder="Y or leave blank"
+                                className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
+                            />
+                        </div>
+                        <div>
+                            <label className="block text-sm font-medium text-gray-700 mb-1">Scrimmage Paid</label>
+                            <input
+                                type="text"
+                                value={formData.scrimmagePaid}
+                                onChange={(e) => setFormData({ ...formData, scrimmagePaid: e.target.value })}
+                                placeholder="Y or leave blank"
+                                className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
+                            />
+                        </div>
+                        <div>
+                            <label className="block text-sm font-medium text-gray-700 mb-1">Event Ready</label>
+                            <input
+                                type="text"
+                                value={formData.eventReady}
+                                onChange={(e) => setFormData({ ...formData, eventReady: e.target.value })}
+                                placeholder="Event Ready or leave blank"
+                                className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
+                            />
+                        </div>
+                        <div>
+                            <label className="block text-sm font-medium text-gray-700 mb-1">Assigned Qualifier</label>
+                            <input
+                                type="text"
+                                value={formData.assignedQualifier}
+                                onChange={(e) => setFormData({ ...formData, assignedQualifier: e.target.value })}
+                                className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
+                            />
+                        </div>
+                        <div>
+                            <label className="block text-sm font-medium text-gray-700 mb-1">Roster Uploaded</label>
+                            <input
+                                type="text"
+                                value={formData.rosterUploaded}
+                                onChange={(e) => setFormData({ ...formData, rosterUploaded: e.target.value })}
+                                placeholder="Y or leave blank"
+                                className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
+                            />
+                        </div>
+                        <div>
+                            <label className="block text-sm font-medium text-gray-700 mb-1">Advanced to Regionals</label>
+                            <input
+                                type="text"
+                                value={formData.advancedToRegionals}
+                                onChange={(e) => setFormData({ ...formData, advancedToRegionals: e.target.value })}
+                                placeholder="Y or leave blank"
+                                className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
+                            />
+                        </div>
+                    </div>
+                    <div className="flex gap-2">
+                        <button
+                            onClick={handleSubmit}
+                            disabled={loading}
+                            className="px-6 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition-colors disabled:opacity-50"
+                        >
+                            {loading ? 'Saving...' : 'Save'}
+                        </button>
+                        <button
+                            onClick={onCancel}
+                            className="px-6 py-2 bg-gray-300 text-gray-700 rounded-lg hover:bg-gray-400 transition-colors"
+                        >
+                            Cancel
+                        </button>
+                    </div>
+                </div>
+            );
+        }
+
+        ReactDOM.render(<App />, document.getElementById('root'));
+    </script>
+</body>
+</html>
