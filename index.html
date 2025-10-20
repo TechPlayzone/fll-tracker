@@ -8,6 +8,7 @@
     <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-app-compat.js"></script>
     <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-auth-compat.js"></script>
     <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-database-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-storage-compat.js"></script>
 </head>
 <body>
     <div id="root"></div>
@@ -48,6 +49,9 @@
             const [error, setError] = useState('');
             const [success, setSuccess] = useState('');
             const [loading, setLoading] = useState(false);
+            const [uploadingRoster, setUploadingRoster] = useState(false);
+            const [uploadProgress, setUploadProgress] = useState(0);
+            const [rosterInfo, setRosterInfo] = useState(null);
 
             useEffect(() => {
                 if (isAdmin) {
@@ -103,6 +107,8 @@
                             setError('This team has not been set up with a zipcode yet. Please contact the administrator.');
                         } else {
                             setTeamData({ teamNumber, ...data });
+                            // Check if roster exists
+                            checkRosterExists(teamNumber);
                         }
                     } else {
                         setError('Team number not found');
@@ -112,6 +118,136 @@
                     setError('Error fetching team data');
                 } finally {
                     setLoading(false);
+                }
+            };
+
+            const checkRosterExists = async (teamNumber) => {
+                try {
+                    const storage = firebase.storage();
+                    const rosterRef = storage.ref(`rosters/${teamNumber}`);
+                    const items = await rosterRef.listAll();
+                    
+                    if (items.items.length > 0) {
+                        const file = items.items[0];
+                        const metadata = await file.getMetadata();
+                        setRosterInfo({
+                            exists: true,
+                            fileName: file.name,
+                            uploadDate: metadata.timeCreated,
+                            size: metadata.size
+                        });
+                    } else {
+                        setRosterInfo({ exists: false });
+                    }
+                } catch (err) {
+                    console.error('Error checking roster:', err);
+                    setRosterInfo({ exists: false });
+                }
+            };
+
+            const handleRosterUpload = async (event, teamNumber) => {
+                const file = event.target.files[0];
+                if (!file) return;
+
+                const allowedTypes = [
+                    'application/pdf',
+                    'application/vnd.ms-excel',
+                    'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+                    'application/msword',
+                    'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+                ];
+
+                if (!allowedTypes.includes(file.type)) {
+                    setError('Please upload a PDF, Excel, or Word document');
+                    return;
+                }
+
+                if (file.size > 10 * 1024 * 1024) {
+                    setError('File size must be less than 10MB');
+                    return;
+                }
+
+                setUploadingRoster(true);
+                setUploadProgress(0);
+                setError('');
+
+                try {
+                    const storage = firebase.storage();
+                    const fileName = `roster_${teamNumber}_${Date.now()}.${file.name.split('.').pop()}`;
+                    const storageRef = storage.ref(`rosters/${teamNumber}/${fileName}`);
+                    
+                    const uploadTask = storageRef.put(file);
+
+                    uploadTask.on('state_changed',
+                        (snapshot) => {
+                            const progress = (snapshot.bytesTransferred / snapshot.totalBytes) * 100;
+                            setUploadProgress(Math.round(progress));
+                        },
+                        (error) => {
+                            console.error('Upload error:', error);
+                            setError('Upload failed: ' + error.message);
+                            setUploadingRoster(false);
+                        },
+                        async () => {
+                            setSuccess('Roster uploaded successfully!');
+                            setUploadingRoster(false);
+                            setUploadProgress(0);
+                            
+                            // Update database to mark roster as uploaded
+                            const db = firebase.database();
+                            await db.ref(`teams/${teamNumber}/rosterUploaded`).set('Y');
+                            
+                            // Refresh roster info
+                            await checkRosterExists(teamNumber);
+                            
+                            setTimeout(() => setSuccess(''), 3000);
+                        }
+                    );
+                } catch (err) {
+                    console.error('Upload error:', err);
+                    setError('Upload failed: ' + err.message);
+                    setUploadingRoster(false);
+                }
+            };
+
+            const handleDownloadRoster = async (teamNumber) => {
+                try {
+                    const storage = firebase.storage();
+                    const rosterRef = storage.ref(`rosters/${teamNumber}`);
+                    const items = await rosterRef.listAll();
+                    
+                    if (items.items.length > 0) {
+                        const url = await items.items[0].getDownloadURL();
+                        window.open(url, '_blank');
+                    }
+                } catch (err) {
+                    console.error('Download error:', err);
+                    setError('Error downloading roster');
+                }
+            };
+
+            const handleDeleteRoster = async (teamNumber) => {
+                if (!window.confirm(`Delete roster for team ${teamNumber}?`)) return;
+
+                try {
+                    const storage = firebase.storage();
+                    const rosterRef = storage.ref(`rosters/${teamNumber}`);
+                    const items = await rosterRef.listAll();
+                    
+                    for (const item of items.items) {
+                        await item.delete();
+                    }
+
+                    // Update database
+                    const db = firebase.database();
+                    await db.ref(`teams/${teamNumber}/rosterUploaded`).set('');
+                    
+                    setSuccess('Roster deleted successfully');
+                    setTimeout(() => setSuccess(''), 3000);
+                    await loadAllTeams();
+                } catch (err) {
+                    console.error('Delete error:', err);
+                    setError('Error deleting roster');
                 }
             };
 
@@ -290,13 +426,77 @@
                                 {teamData && (
                                     <div className="border border-gray-200 rounded-lg p-6">
                                         <h3 className="text-xl font-bold text-gray-800 mb-4">Team {teamData.teamNumber}</h3>
-                                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
                                             <StatusItem label="Qualifier Paid" value={teamData.qualifierPaid} />
                                             <StatusItem label="Scrimmage Paid" value={teamData.scrimmagePaid} />
                                             <StatusItem label="Ready to Participate" value={teamData.eventReady} />
                                             <StatusItem label="Assigned Qualifier" value={teamData.assignedQualifier} />
                                             <StatusItem label="Roster Uploaded" value={teamData.rosterUploaded} />
                                             <StatusItem label="Advanced to Regionals" value={teamData.advancedToRegionals} />
+                                        </div>
+
+                                        <div className="border-t pt-6">
+                                            <h4 className="text-lg font-bold text-gray-800 mb-4">Team Roster Upload</h4>
+                                            
+                                            {rosterInfo?.exists ? (
+                                                <div className="bg-green-50 border border-green-200 rounded-lg p-4">
+                                                    <div className="flex items-center justify-between">
+                                                        <div>
+                                                            <p className="font-medium text-green-900">✓ Roster Uploaded</p>
+                                                            <p className="text-sm text-green-700 mt-1">
+                                                                File: {rosterInfo.fileName}
+                                                            </p>
+                                                            <p className="text-xs text-green-600 mt-1">
+                                                                Uploaded: {new Date(rosterInfo.uploadDate).toLocaleDateString()}
+                                                            </p>
+                                                        </div>
+                                                        <label className="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 cursor-pointer transition-colors">
+                                                            Replace Roster
+                                                            <input
+                                                                type="file"
+                                                                accept=".pdf,.xlsx,.xls,.doc,.docx"
+                                                                onChange={(e) => handleRosterUpload(e, teamData.teamNumber)}
+                                                                className="hidden"
+                                                                disabled={uploadingRoster}
+                                                            />
+                                                        </label>
+                                                    </div>
+                                                </div>
+                                            ) : (
+                                                <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
+                                                    <p className="text-blue-900 mb-4">Please upload your team roster (PDF, Excel, or Word format)</p>
+                                                    <label className="px-6 py-3 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 cursor-pointer transition-colors inline-block">
+                                                        {uploadingRoster ? 'Uploading...' : 'Upload Roster'}
+                                                        <input
+                                                            type="file"
+                                                            accept=".pdf,.xlsx,.xls,.doc,.docx"
+                                                            onChange={(e) => handleRosterUpload(e, teamData.teamNumber)}
+                                                            className="hidden"
+                                                            disabled={uploadingRoster}
+                                                        />
+                                                    </label>
+                                                </div>
+                                            )}
+
+                                            {uploadingRoster && (
+                                                <div className="mt-4">
+                                                    <div className="flex items-center justify-between mb-2">
+                                                        <span className="text-sm text-gray-600">Uploading...</span>
+                                                        <span className="text-sm font-medium text-indigo-600">{uploadProgress}%</span>
+                                                    </div>
+                                                    <div className="w-full bg-gray-200 rounded-full h-2">
+                                                        <div 
+                                                            className="bg-indigo-600 h-2 rounded-full transition-all duration-300"
+                                                            style={{ width: `${uploadProgress}%` }}
+                                                        ></div>
+                                                    </div>
+                                                </div>
+                                            )}
+
+                                            <p className="text-xs text-gray-500 mt-4">
+                                                * Accepted formats: PDF, Excel (.xlsx, .xls), Word (.doc, .docx)<br/>
+                                                * Maximum file size: 10MB
+                                            </p>
                                         </div>
                                     </div>
                                 )}
