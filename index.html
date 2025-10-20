@@ -200,6 +200,13 @@
                             // Refresh roster info
                             await checkRosterExists(teamNumber);
                             
+                            // Refresh team data to update the status display
+                            const snapshot = await db.ref(`teams/${teamNumber}`).once('value');
+                            const data = snapshot.val();
+                            if (data) {
+                                setTeamData({ teamNumber, ...data });
+                            }
+                            
                             setTimeout(() => setSuccess(''), 3000);
                         }
                     );
