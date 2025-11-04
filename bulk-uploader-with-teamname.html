@@ -1,0 +1,310 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Bulk Team Data Uploader (With Team Names)</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-app-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-auth-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-database-compat.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+</head>
+<body class="bg-gray-100 min-h-screen py-8 px-4">
+    <div class="max-w-6xl mx-auto">
+        <div class="bg-white rounded-lg shadow-lg p-8">
+            <h1 class="text-3xl font-bold text-gray-800 mb-2">Bulk Team Data Uploader (With Team Names)</h1>
+            <p class="text-gray-600 mb-4">Upload your Excel file to import all team data including team names</p>
+            
+            <div class="bg-blue-50 border border-blue-200 rounded-lg p-4 mb-6">
+                <h3 class="font-bold text-blue-900 mb-2">✅ Excel Column Mapping:</h3>
+                <div class="text-sm text-blue-800 grid grid-cols-2 gap-2">
+                    <div>• Column A → Team Number</div>
+                    <div>• <strong>Column B → Team Name (NEW!)</strong></div>
+                    <div>• Column C → Zipcode</div>
+                    <div>• Column D → Qualifier Paid</div>
+                    <div>• Column E → Scrimmage Paid</div>
+                    <div>• Column F → Event Ready</div>
+                    <div>• Column G → Assigned Qualifier</div>
+                    <div>• Column H → Roster Uploaded</div>
+                    <div>• Column I → Advanced to Regionals</div>
+                </div>
+            </div>
+
+            <div id="loginSection">
+                <h2 class="text-xl font-bold text-gray-800 mb-4">Step 1: Admin Login</h2>
+                <div class="space-y-4 mb-6">
+                    <input
+                        type="email"
+                        id="adminEmail"
+                        placeholder="Admin Email"
+                        class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500"
+                    />
+                    <input
+                        type="password"
+                        id="adminPassword"
+                        placeholder="Password"
+                        class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500"
+                    />
+                    <button
+                        onclick="login()"
+                        class="w-full px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700"
+                    >
+                        Login
+                    </button>
+                </div>
+            </div>
+
+            <div id="uploadSection" style="display: none;">
+                <h2 class="text-xl font-bold text-gray-800 mb-4">Step 2: Upload Excel File</h2>
+                <div class="border-2 border-dashed border-gray-300 rounded-lg p-8 text-center mb-6">
+                    <input
+                        type="file"
+                        id="fileInput"
+                        accept=".xlsx,.xls"
+                        onchange="handleFile(event)"
+                        class="hidden"
+                    />
+                    <label for="fileInput" class="cursor-pointer">
+                        <svg class="w-16 h-16 mx-auto text-gray-400 mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" />
+                        </svg>
+                        <p class="text-lg font-medium text-gray-700">Click to select Excel file</p>
+                        <p class="text-sm text-gray-500 mt-2">or drag and drop here</p>
+                    </label>
+                </div>
+
+                <div id="preview" style="display: none;">
+                    <h3 class="text-lg font-bold text-gray-800 mb-4">Preview (First 10 Teams) - Verify All Columns</h3>
+                    <div class="overflow-x-auto mb-6">
+                        <table class="w-full text-xs" id="previewTable">
+                            <thead class="bg-gray-50">
+                                <tr>
+                                    <th class="px-2 py-2 text-left">Team #</th>
+                                    <th class="px-2 py-2 text-left">Team Name</th>
+                                    <th class="px-2 py-2 text-left">Zipcode</th>
+                                    <th class="px-2 py-2 text-left">Qual Paid</th>
+                                    <th class="px-2 py-2 text-left">Scrim Paid</th>
+                                    <th class="px-2 py-2 text-left">Event Ready</th>
+                                    <th class="px-2 py-2 text-left">Assigned Qualifier</th>
+                                    <th class="px-2 py-2 text-left">Roster</th>
+                                    <th class="px-2 py-2 text-left">Advanced</th>
+                                </tr>
+                            </thead>
+                            <tbody id="previewBody"></tbody>
+                        </table>
+                    </div>
+                    <div class="flex gap-4">
+                        <button
+                            onclick="uploadData()"
+                            id="uploadBtn"
+                            class="flex-1 px-6 py-3 bg-green-600 text-white rounded-lg hover:bg-green-700 font-medium"
+                        >
+                            Upload All Teams to Firebase
+                        </button>
+                        <button
+                            onclick="resetUpload()"
+                            class="px-6 py-3 bg-gray-300 text-gray-700 rounded-lg hover:bg-gray-400"
+                        >
+                            Cancel
+                        </button>
+                    </div>
+                </div>
+            </div>
+
+            <div id="statusSection" class="mt-6"></div>
+        </div>
+    </div>
+
+    <script>
+        // Firebase Configuration
+        const firebaseConfig = {
+            apiKey: "AIzaSyBhyxcRDG2L4aHnKF6p03Iox42DBw4Q504",
+            authDomain: "fll-team-tracker.firebaseapp.com",
+            databaseURL: "https://fll-team-tracker-default-rtdb.firebaseio.com",
+            projectId: "fll-team-tracker",
+            storageBucket: "fll-team-tracker.firebasestorage.app",
+            messagingSenderId: "887580518205",
+            appId: "1:887580518205:web:ccd2648b158b9440c98754"
+        };
+
+        firebase.initializeApp(firebaseConfig);
+        let parsedData = [];
+
+        function showStatus(message, type = 'info') {
+            const statusSection = document.getElementById('statusSection');
+            const colors = {
+                success: 'bg-green-50 border-green-200 text-green-800',
+                error: 'bg-red-50 border-red-200 text-red-800',
+                info: 'bg-blue-50 border-blue-200 text-blue-800',
+                warning: 'bg-yellow-50 border-yellow-200 text-yellow-800'
+            };
+            statusSection.innerHTML = `
+                <div class="${colors[type]} border rounded-lg p-4">
+                    ${message}
+                </div>
+            `;
+        }
+
+        async function login() {
+            const email = document.getElementById('adminEmail').value;
+            const password = document.getElementById('adminPassword').value;
+
+            if (!email || !password) {
+                showStatus('Please enter email and password', 'error');
+                return;
+            }
+
+            try {
+                await firebase.auth().signInWithEmailAndPassword(email, password);
+                document.getElementById('loginSection').style.display = 'none';
+                document.getElementById('uploadSection').style.display = 'block';
+                showStatus('Successfully logged in! Now upload your Excel file with team names in Column B.', 'success');
+            } catch (error) {
+                showStatus('Login failed: ' + error.message, 'error');
+            }
+        }
+
+        function handleFile(event) {
+            const file = event.target.files[0];
+            if (!file) return;
+
+            const reader = new FileReader();
+            reader.onload = function(e) {
+                try {
+                    const data = new Uint8Array(e.target.result);
+                    const workbook = XLSX.read(data, { type: 'array' });
+                    const firstSheet = workbook.Sheets[workbook.SheetNames[0]];
+                    const jsonData = XLSX.utils.sheet_to_json(firstSheet, { header: 1 });
+
+                    console.log("First 5 rows from Excel:");
+                    for (let i = 0; i < Math.min(5, jsonData.length); i++) {
+                        console.log(`Row ${i}:`, jsonData[i]);
+                    }
+
+                    // Parse the data (skip first 2 rows which are headers)
+                    parsedData = [];
+                    let missingZipcodes = 0;
+                    let missingNames = 0;
+                    
+                    for (let i = 2; i < jsonData.length; i++) {
+                        const row = jsonData[i];
+                        if (row[0] && !isNaN(row[0])) {
+                            const teamName = row[1] ? String(row[1]).trim() : '';
+                            const zipcode = row[2] ? String(row[2]).trim() : '';
+                            
+                            if (!zipcode) missingZipcodes++;
+                            if (!teamName) missingNames++;
+                            
+                            parsedData.push({
+                                teamNumber: String(row[0]),
+                                teamName: teamName,                  // Column 1 (B) - NEW!
+                                zipcode: zipcode,                    // Column 2 (C)
+                                qualifierPaid: row[3] || '',         // Column 3 (D)
+                                scrimmagePaid: row[4] || '',         // Column 4 (E)
+                                eventReady: row[5] || '',            // Column 5 (F)
+                                assignedQualifier: row[6] || '',     // Column 6 (G)
+                                rosterUploaded: row[7] || '',        // Column 7 (H)
+                                advancedToRegionals: row[8] || ''    // Column 8 (I)
+                            });
+                        }
+                    }
+
+                    if (parsedData.length === 0) {
+                        showStatus('No valid team data found in file', 'error');
+                        return;
+                    }
+
+                    displayPreview();
+                    
+                    let statusMsg = `Successfully parsed ${parsedData.length} teams with team names!`;
+                    if (missingZipcodes > 0 || missingNames > 0) {
+                        statusMsg += ` ⚠️ Warning: ${missingNames} teams missing names, ${missingZipcodes} teams missing zipcodes.`;
+                        showStatus(statusMsg, 'warning');
+                    } else {
+                        showStatus(statusMsg, 'success');
+                    }
+                } catch (error) {
+                    showStatus('Error reading file: ' + error.message, 'error');
+                    console.error('Full error:', error);
+                }
+            };
+            reader.readAsArrayBuffer(file);
+        }
+
+        function displayPreview() {
+            const previewBody = document.getElementById('previewBody');
+            const preview = parsedData.slice(0, 10);
+
+            previewBody.innerHTML = preview.map(team => `
+                <tr class="border-t ${(!team.zipcode || !team.teamName) ? 'bg-yellow-50' : ''}">
+                    <td class="px-2 py-2 font-medium">${team.teamNumber}</td>
+                    <td class="px-2 py-2 ${!team.teamName ? 'text-red-600 font-bold' : 'text-blue-600'}">${team.teamName || '⚠️ MISSING'}</td>
+                    <td class="px-2 py-2 ${!team.zipcode ? 'text-red-600 font-bold' : 'text-green-600'}">${team.zipcode || '⚠️ MISSING'}</td>
+                    <td class="px-2 py-2">${team.qualifierPaid}</td>
+                    <td class="px-2 py-2">${team.scrimmagePaid}</td>
+                    <td class="px-2 py-2">${team.eventReady}</td>
+                    <td class="px-2 py-2">${team.assignedQualifier}</td>
+                    <td class="px-2 py-2">${team.rosterUploaded}</td>
+                    <td class="px-2 py-2">${team.advancedToRegionals}</td>
+                </tr>
+            `).join('');
+
+            document.getElementById('preview').style.display = 'block';
+        }
+
+        async function uploadData() {
+            if (parsedData.length === 0) {
+                showStatus('No data to upload', 'error');
+                return;
+            }
+
+            const uploadBtn = document.getElementById('uploadBtn');
+            uploadBtn.disabled = true;
+            uploadBtn.textContent = 'Uploading...';
+
+            try {
+                const db = firebase.database();
+                let uploaded = 0;
+
+                for (const team of parsedData) {
+                    await db.ref(`teams/${team.teamNumber}`).set({
+                        teamName: team.teamName,
+                        zipcode: team.zipcode,
+                        qualifierPaid: team.qualifierPaid,
+                        scrimmagePaid: team.scrimmagePaid,
+                        eventReady: team.eventReady,
+                        assignedQualifier: team.assignedQualifier,
+                        rosterUploaded: team.rosterUploaded,
+                        advancedToRegionals: team.advancedToRegionals
+                    });
+                    uploaded++;
+
+                    // Update progress
+                    uploadBtn.textContent = `Uploading... ${uploaded}/${parsedData.length}`;
+                }
+
+                showStatus(`✅ Successfully uploaded ${uploaded} teams with team names to Firebase!`, 'success');
+                uploadBtn.textContent = 'Upload Complete!';
+                uploadBtn.className = 'flex-1 px-6 py-3 bg-gray-400 text-white rounded-lg font-medium cursor-not-allowed';
+
+                setTimeout(() => {
+                    showStatus(`🎉 All done! Team names will now appear in your tracker.`, 'success');
+                }, 1000);
+
+            } catch (error) {
+                showStatus('Upload failed: ' + error.message, 'error');
+                uploadBtn.disabled = false;
+                uploadBtn.textContent = 'Upload All Teams to Firebase';
+            }
+        }
+
+        function resetUpload() {
+            document.getElementById('fileInput').value = '';
+            document.getElementById('preview').style.display = 'none';
+            parsedData = [];
+            showStatus('Upload cancelled. Select a new file to try again.', 'info');
+        }
+    </script>
+</body>
+</html>
